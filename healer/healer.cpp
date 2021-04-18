@@ -10,8 +10,18 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+
+#include <iostream>
+#include <string>
+
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+
 #include <dbgeng.h>
+
+
 
 #include <map> 
 #include <vector>
@@ -74,7 +84,7 @@ ULONG64 g_OsVerOffset;
 PCSTR UNUSUAL_EVENT_MSG = "An unusual event occurred.  Ignore it?";
 PCSTR UNUSUAL_EVENT_TITLE = "Unhandled Event";
 
-
+int isFuzzMode = 0;
 
 
 
@@ -168,6 +178,43 @@ ULONG64 g_TraceFrom[3];
 // Utility routines.
 //
 //----------------------------------------------------------------------------
+
+SOCKET ConnectSocket;
+
+int init_tcp_client()
+{
+
+	WSADATA wsaData;
+	int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+	if (iResult != NO_ERROR) {
+		std::cout << "WSAStartup Failed with error: " << iResult << std::endl;
+		return 1;
+	}
+
+	ConnectSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (ConnectSocket == INVALID_SOCKET) {
+		std::cout << "Error at socket(): " << WSAGetLastError() << std::endl;
+		WSACleanup();
+		return 1;
+	}
+
+	// The sockaddr_in structure specifies the address family,
+	// IP address, and port for the socket that is being bound.
+	sockaddr_in addrServer;
+	addrServer.sin_family = AF_INET;
+	InetPton(AF_INET, "127.0.0.1", &addrServer.sin_addr.s_addr);
+
+	addrServer.sin_port = htons(6666);
+	memset(&(addrServer.sin_zero), '\0', 8);
+
+	iResult = connect(ConnectSocket, (SOCKADDR*)&addrServer, sizeof(addrServer));
+	if (iResult == SOCKET_ERROR) {
+		closesocket(ConnectSocket);
+		std::cout << "Unable to connect to server: " << WSAGetLastError() << std::endl;
+		WSACleanup();
+		return 1;
+	}
+}
 
 
 void clean_resource()
@@ -579,7 +626,6 @@ EventCallbacks::SessionStatus(
 		Exit(1, "GetIndexByName failed, 0x%X\n", Status);
 	}
 	
-
     return S_OK;
 }
 
@@ -809,8 +855,6 @@ handle_event_loop(void)
 		}
 
 		g_Control->GetExecutionStatus(&ExecStatus);
-
-
 		if (ExecStatus == DEBUG_STATUS_NO_DEBUGGEE) {
 			break;
 		}
@@ -909,14 +953,37 @@ main(int Argc, _In_reads_(Argc) PCSTR* Argv)
     
     
     ParseCommandLine(Argc, Argv);
-	
-	
 
-	for (size_t i = 0; i < 3; i++)
+
+	if (isFuzzMode) {
+		init_tcp_client();
+	}
+
+	
+	int iResult;
+
+	char sendbuf[0x100] = { 0 };
+	char recvbuf[0x100] = { 0 };
+
+	for (;;)
 	{
+
+		if (isFuzzMode) {
+			iResult = send(ConnectSocket, sendbuf, 4, 0);
+			iResult = recv(ConnectSocket, recvbuf, 4, 0);
+		}
+
+
+
 		init_debug_callback();
 		start_debug();
 		clean_resource();
+
+		if (!isFuzzMode) {
+			break;
+		}
+
+
 	}
 
     Exit(0, "");
