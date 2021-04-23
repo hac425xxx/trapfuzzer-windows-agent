@@ -3,5 +3,6 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LocalDebuggerCommandArguments>"D:\code\windbg-ext-develop\bin\vuln.exe"</LocalDebuggerCommandArguments>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerWorkingDirectory>D:\code\trapfuzzer\tracer</LocalDebuggerWorkingDirectory>
   </PropertyGroup>
 </Project>

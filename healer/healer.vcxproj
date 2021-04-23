@@ -82,6 +82,7 @@
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
+      <AdditionalUsingDirectories>.</AdditionalUsingDirectories>
     </ClCompile>
     <Link>
       <TargetMachine>MachineX86</TargetMachine>

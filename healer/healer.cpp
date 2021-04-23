@@ -21,6 +21,7 @@
 
 #include <dbgeng.h>
 
+#include "nlohmann/json.hpp"
 
 
 #include <map> 
@@ -51,6 +52,10 @@ typedef struct _COV_MOD_INFO {
 std::vector<COV_MOD_INFO*> cov_mod_info_list;
 unsigned int g_cov_mod_count = 0;
 
+
+int is_crash = 0;
+
+std::map<unsigned int, unsigned int>  exit_bb_list;
 
 
 PCSTR g_SymbolPath;
@@ -160,7 +165,7 @@ void save_all_trace()
 
 		for (size_t i = 0; i < cmi->bb_trace.size(); i++)
 		{
-			fprintf(pfile, "%p\n", cmi->bb_trace[i]);
+			fprintf(pfile, "0x%lx\n", cmi->bb_trace[i]);
 		}
 
 		fflush(pfile);//刷新缓冲区。将缓冲区数据写入文件   
@@ -204,7 +209,7 @@ int init_tcp_client()
 	addrServer.sin_family = AF_INET;
 	InetPton(AF_INET, "127.0.0.1", &addrServer.sin_addr.s_addr);
 
-	addrServer.sin_port = htons(6666);
+	addrServer.sin_port = htons(12241);
 	memset(&(addrServer.sin_zero), '\0', 8);
 
 	iResult = connect(ConnectSocket, (SOCKADDR*)&addrServer, sizeof(addrServer));
@@ -214,6 +219,12 @@ int init_tcp_client()
 		WSACleanup();
 		return 1;
 	}
+
+
+
+	int recvTimeout = 3000 * 1000;   //30s
+	setsockopt(ConnectSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&recvTimeout, sizeof(int));
+
 }
 
 
@@ -314,8 +325,8 @@ dump_stack_trace(void)
 
 	for (size_t i = 0; i < Count; i++)
 	{
-		printf("InstructionOffset: %p ", Frames[i].InstructionOffset);
-		printf("ReturnOffset: %p\n", Frames[i].ReturnOffset);
+		// printf("InstructionOffset: %p ", Frames[i].InstructionOffset);
+		// printf("ReturnOffset: %p\n", Frames[i].ReturnOffset);
 
 		g_Symbols->GetModuleByOffset(Frames[i].InstructionOffset, 0, &index, &base);
 
@@ -327,6 +338,24 @@ dump_stack_trace(void)
 
 
 	delete[] Frames;
+}
+
+
+void
+save_status()
+{
+	FILE *pfile = fopen("tracer.status", "w");
+
+	if (is_crash) {
+		fprintf(pfile, "crash");
+	}
+	else
+	{
+		fprintf(pfile, "normal");
+	}
+
+	fflush(pfile); 
+	fclose(pfile);
 }
 
 
@@ -502,7 +531,14 @@ EventCallbacks::Exception(
 			
 			BB_INFO* bi = cmi->bb_info_map[Exception->ExceptionAddress - cmi->image_base];
 
-			printf("rva: 0x%lx\n", bi->voff);
+			// printf("rva: 0x%lx\n", bi->voff);
+
+			if (exit_bb_list[bi->voff] == 1) {
+				Print("Exit bb: %p\n", bi->voff);
+				g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
+				return DEBUG_STATUS_NO_DEBUGGEE;
+			}
+
 
 			cmi->bb_trace.push_back(bi->voff);
 
@@ -518,9 +554,7 @@ EventCallbacks::Exception(
 
 	if (Exception->ExceptionCode == STATUS_ACCESS_VIOLATION) {
 		dump_stack_trace();
-		save_all_trace();
-		//g_Client->TerminateProcesses();
-		//g_Client->EndSession(DEBUG_END_ACTIVE_TERMINATE);
+		is_crash = 1;
 		g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
 		return DEBUG_STATUS_NO_DEBUGGEE;
 	}
@@ -685,149 +719,6 @@ CreateInterfaces(void)
 
 }
 
-void
-ParseCommandLine(int Argc, _In_reads_(Argc) PCSTR* Argv)
-{
-    while (--Argc > 0)
-    {
-        Argv++;
-
-        if (!strcmp(Argv[0], "-plat"))
-        {
-            Argv++;
-            Argc--;
-            if (Argc > 0)
-            {
-                if (EOF == sscanf_s(Argv[0], "%i", (long*)&g_OsVer.dwPlatformId))
-                {
-                    Exit(1, "-plat illegal argument type\n");
-                }
-                g_NeedVersionBps = TRUE;
-            }
-            else
-            {
-                Exit(1, "-plat missing argument\n");
-            }
-        }
-        else if (!strcmp(Argv[0], "-v"))
-        {
-            g_Verbose = TRUE;
-        }
-        else if (!strcmp(Argv[0], "-ver"))
-        {
-            Argv++;
-            Argc--;
-            if (Argc > 0)
-            {
-                if (3 != sscanf_s(Argv[0], "%i.%i.%i",
-                                    (long*)&g_OsVer.dwMajorVersion, (long*)&g_OsVer.dwMinorVersion,
-                                    (long*)&g_OsVer.dwBuildNumber))
-                {
-                    Exit(1, "-ver illegal argument type\n");
-                }
-                g_NeedVersionBps = TRUE;
-            }
-            else
-            {
-                Exit(1, "-ver missing argument\n");
-            }
-        }
-        else if (!strcmp(Argv[0], "-y"))
-        {
-            Argv++;
-            Argc--;
-            if (Argc > 0)
-            {
-                g_SymbolPath = Argv[0];
-            }
-            else
-            {
-                Exit(1, "-y missing argument\n");
-            }
-        }
-        else
-        {
-            // Assume process arguments begin.
-            break;
-        }
-    }
-    
-    //
-    // Concatenate remaining arguments into a command line.
-    //
-    
-    ULONG Pos = 0;
-    while (Argc > 0)
-    {
-        BOOL Quote = FALSE;
-        ULONG Len;
-        
-        // Quote arguments with spaces.
-        if (strchr(Argv[0], ' ') != NULL || strchr(Argv[0], '\t') != NULL)
-        {
-            if (Pos < ARRAYSIZE(g_CommandLine))
-            {
-                g_CommandLine[Pos++] = '"';
-            }
-            else
-            {
-                Exit(1, "Command line too long\n");
-            }
-            Quote = TRUE;
-        }
-
-        Len = (ULONG)strlen(Argv[0]);
-        if ((Len + Pos + 1) < ARRAYSIZE(g_CommandLine))
-        {
-            memcpy(&g_CommandLine[Pos], Argv[0], Len + 1);
-        }
-        else
-        {
-            Exit(1, "Command line too long\n");
-        }
-        
-        Pos += Len;
-
-        if (Quote)
-        {
-            if (Pos < ARRAYSIZE(g_CommandLine))
-            {
-                g_CommandLine[Pos++] = '"';
-            }
-            else
-            {
-                Exit(1, "Command line too long\n");
-            }
-        }
-
-        if (Pos < ARRAYSIZE(g_CommandLine))
-        {
-            g_CommandLine[Pos++] = ' ';
-        }
-        else
-        {
-            Exit(1, "Command line too long\n");
-        }
-        
-        Argv++;
-        Argc--;
-    }
-
-    if (Pos < ARRAYSIZE(g_CommandLine))
-    {
-        g_CommandLine[Pos] = 0;
-    }
-    else
-    {
-        Exit(1, "Command line too long\n");
-    }
-
-    if (strlen(g_CommandLine) == 0)
-    {
-        Exit(1, "No application command line given\n");
-    }
-}
-
 
 void
 handle_event_loop(void)
@@ -894,6 +785,8 @@ void
 start_debug(void)
 {
     HRESULT Status;
+
+	is_crash = 0;
     
     // Everything's set up so start the app.
     if ((Status = g_Client->CreateProcess(0, g_CommandLine,
@@ -903,6 +796,10 @@ start_debug(void)
     }
 
 	handle_event_loop();
+
+	save_status();
+	save_all_trace();
+
 
 	reset_cmi_info();
 
@@ -942,18 +839,46 @@ void load_bb_info(char* fpath)
 	cov_mod_info_list.push_back(cmi);
 }
 
+#include <fstream>
+#include <iostream>
+using namespace std;
+using json = nlohmann::json;
+
+void parse_json(char* path)
+{
+	// read a JSON file
+	std::ifstream fs(path);
+	json j;
+	fs >> j;
+
+	std::string exit_basci_block_list = j["exit_basci_block_list"];
+	std::vector<std::string> basic_block_file_list = j["basic_block_file_path"];
+	std::vector<std::string> args = j["args"];
+
+
+	bool patch_to_binary = j["patch_to_binary"];
+
+
+	for (size_t i = 0; i < basic_block_file_list.size(); i++)
+	{
+		load_bb_info((char*)basic_block_file_list[i].c_str());
+	}
+
+	for (size_t i = 0; i < args.size(); i++)
+	{
+		strcat(g_CommandLine, args[i].c_str());
+		strcat(g_CommandLine, " ");
+	}
+
+}
 
 
 void __cdecl
 main(int Argc, _In_reads_(Argc) PCSTR* Argv)
 {
 
-	load_bb_info("D:\\code\\windbg-ext-develop\\bin\\vuln.exe-bb.txt");
-
-    
-    
-    ParseCommandLine(Argc, Argv);
-
+	parse_json("D:\\code\\trapfuzzer\\config.json");
+	isFuzzMode = 1;
 
 	if (isFuzzMode) {
 		init_tcp_client();
@@ -969,8 +894,22 @@ main(int Argc, _In_reads_(Argc) PCSTR* Argv)
 	{
 
 		if (isFuzzMode) {
+
+			*(unsigned int*)sendbuf = 0x1122ddaa;
 			iResult = send(ConnectSocket, sendbuf, 4, 0);
+
+			if (iResult == -1) {
+				puts("send start packet failed!");
+				break;
+			}
+
+			puts("send");
 			iResult = recv(ConnectSocket, recvbuf, 4, 0);
+
+			if (iResult == -1) {
+				puts("recv from tracer failed!");
+				break;
+			}
 		}
 
 
@@ -983,6 +922,15 @@ main(int Argc, _In_reads_(Argc) PCSTR* Argv)
 			break;
 		}
 
+		if (isFuzzMode) {
+
+			*(unsigned int*)sendbuf = 0x33333333;
+			iResult = send(ConnectSocket, sendbuf, 4, 0);
+			if (iResult == -1) {
+				puts("send finish packet failed!");
+				break;
+			}
+		}
 
 	}
 
