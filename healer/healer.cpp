@@ -54,6 +54,7 @@ unsigned int g_cov_mod_count = 0;
 
 
 int is_crash = 0;
+bool patch_to_binary = false;
 
 std::map<unsigned int, unsigned int>  exit_bb_list;
 
@@ -90,8 +91,59 @@ PCSTR UNUSUAL_EVENT_MSG = "An unusual event occurred.  Ignore it?";
 PCSTR UNUSUAL_EVENT_TITLE = "Unhandled Event";
 
 int isFuzzMode = 0;
+#include <TlHelp32.h>
 
 
+DWORD dwDebugeePid = 0;
+
+COV_MOD_INFO * get_cov_mod_info_by_module_name(char* mod_name);
+
+
+BOOL KillProcess(DWORD ProcessId)
+{
+	HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, ProcessId);
+	if (hProcess == NULL)
+		return FALSE;
+	if (!TerminateProcess(hProcess, 0))
+		return FALSE;
+	return TRUE;
+}
+
+
+
+bool GetModuleList(DWORD dwPId) {
+	HANDLE        hModuleSnap = INVALID_HANDLE_VALUE;
+	MODULEENTRY32 me32 = { sizeof(MODULEENTRY32) };
+	// 1. 创建一个模块相关的快照句柄
+	hModuleSnap = CreateToolhelp32Snapshot(
+		TH32CS_SNAPMODULE,  // 指定快照的类型
+		dwPId);            // 指定进程
+	if (hModuleSnap == INVALID_HANDLE_VALUE)
+		return false;
+
+	// 2. 通过模块快照句柄获取第一个模块信息
+	if (!Module32First(hModuleSnap, &me32)) {
+		CloseHandle(hModuleSnap);
+		return false;
+	}
+
+	// 3. 循环获取模块信息
+	do {
+
+		COV_MOD_INFO* cmi = get_cov_mod_info_by_module_name(me32.szModule);
+
+		if (cmi != NULL) {
+			if (!isFuzzMode) {
+				wprintf(L"模块基址:%d,模块大小：%d,模块名称:%s\n", me32.modBaseAddr, me32.modBaseSize, me32.szModule);
+			}
+			strcpy(cmi->full_path, me32.szExePath);
+		}
+
+	} while (Module32Next(hModuleSnap, &me32));
+
+	// 4. 关闭句柄并退出函数
+	CloseHandle(hModuleSnap);
+}
 
 COV_MOD_INFO * get_cov_mod_info_by_pc(unsigned int pc)
 {
@@ -144,11 +196,83 @@ COV_MOD_INFO * reset_cmi_info()
 		cmi->image_base = 0;
 		cmi->image_end = 0;
 		cmi->full_path[0] = '\0';
+
 	}
 
 	return ret;
 }
 
+int do_patch_file(char* lpFileName, COV_MOD_INFO* cmi)
+{
+	int count = 0;
+	HANDLE hFile = CreateFile(lpFileName, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	while (INVALID_HANDLE_VALUE == hFile)
+	{
+		KillProcess(dwDebugeePid);
+		Sleep(500);
+
+		if (!isFuzzMode) {
+			std::cout << "File could not be opened.";
+			TCHAR* lpMsgBuf;
+			FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+				FORMAT_MESSAGE_FROM_SYSTEM, NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)&lpMsgBuf, 0,
+				NULL);
+			puts(lpMsgBuf);
+		}
+		hFile = CreateFile(lpFileName, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	}
+
+
+	DWORD dwFileSize = GetFileSize(hFile, NULL);
+
+	HANDLE hFileMap = CreateFileMapping(hFile, NULL, PAGE_READWRITE, 0, 0, NULL);
+	if (NULL == hFileMap)
+	{
+		CloseHandle(hFile);
+		return -1;
+	}
+
+	PVOID pvFile = MapViewOfFile(hFileMap, FILE_MAP_WRITE, 0, 0, 0);
+
+	if (NULL == pvFile)
+	{
+		CloseHandle(hFileMap);
+		CloseHandle(hFile);
+		return false;
+	}
+
+	char* file_base_addr = (char*)pvFile;
+
+	for (size_t j = 0; j < cmi->bb_trace.size(); j++)
+	{
+		BB_INFO* bi = cmi->bb_info_map[cmi->bb_trace[j]];
+		memcpy(file_base_addr + bi->foff, bi->instr, bi->instr_size);
+		count++;
+	}
+
+	UnmapViewOfFile(pvFile);
+	CloseHandle(hFileMap);
+	CloseHandle(hFile);
+
+	return count;
+}
+
+int patch_to_binary_file()
+{
+
+	FILE *proc_map_fp = fopen("maps.txt", "w");
+	int count = 0;
+	for (int i = 0; i < cov_mod_info_list.size(); i++)
+	{
+		COV_MOD_INFO* cmi = cov_mod_info_list[i];
+		fprintf(proc_map_fp, "%s, 0x%llx\n", cmi->full_path, cmi->image_base);
+		if (cmi->bb_trace.size() != 0) {
+			count += do_patch_file(cmi->full_path, cmi);
+		}
+	}
+	fclose(proc_map_fp);
+	return count;
+}
 
 void save_all_trace()
 {
@@ -161,15 +285,15 @@ void save_all_trace()
 		char bb_file_name[0x100] = { 0 };
 		sprintf(bb_file_name, "%s.trace", cmi->module_name);
 
-		FILE *pfile = fopen(bb_file_name, "w");//以写的方式打开C.txt文件。   
+		FILE *pfile = fopen(bb_file_name, "w");   
 
 		for (size_t i = 0; i < cmi->bb_trace.size(); i++)
 		{
 			fprintf(pfile, "0x%lx\n", cmi->bb_trace[i]);
 		}
 
-		fflush(pfile);//刷新缓冲区。将缓冲区数据写入文件   
-		fclose(pfile);//关闭文件  
+		fflush(pfile);
+		fclose(pfile);
 	}
 }
 
@@ -220,11 +344,8 @@ int init_tcp_client()
 		return 1;
 	}
 
-
-
 	int recvTimeout = 3000 * 1000;   //30s
-	setsockopt(ConnectSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&recvTimeout, sizeof(int));
-
+	// setsockopt(ConnectSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&recvTimeout, sizeof(int));
 }
 
 
@@ -265,7 +386,6 @@ void
 Exit(int Code, _In_ _Printf_format_string_ PCSTR Format, ...)
 {
 
-	clean_resource();
     // Output an error message if given.
     if (Format != NULL)
     {
@@ -283,8 +403,6 @@ void
 Print(_In_ _Printf_format_string_ PCSTR Format, ...)
 {
     va_list Args;
-
-    printf("HEALER: ");
     va_start(Args, Format);
     vprintf(Format, Args);
     va_end(Args);
@@ -297,7 +415,10 @@ dump_stack_trace(void)
 	PDEBUG_STACK_FRAME Frames = NULL;
 	int Count = 50;
 
-	printf("\nFirst %d frames of the call stack:\n", Count);
+	if (!isFuzzMode) {
+		printf("\nFirst %d frames of the call stack:\n", Count);
+	}
+	
 
 	
 	ULONG Filled;
@@ -333,9 +454,30 @@ dump_stack_trace(void)
 		fprintf(pfile, "%p\n", Frames[i].InstructionOffset);
 	}
 
-	fflush(pfile);//刷新缓冲区。将缓冲区数据写入文件   
-	fclose(pfile);//关闭文件  
+	fflush(pfile);
+	fclose(pfile);
 
+
+
+	pfile = fopen("crashinfo.txt", "w");//以写的方式打开C.txt文件。   
+
+	DEBUG_VALUE reg = {0};
+	g_Registers->GetValue(g_EipIndex, &reg);
+
+	fprintf(pfile, "pc: 0x%lx\n", reg.I32);
+
+	fprintf(pfile, "[code]\n");
+
+	unsigned char code[0x100] = { 0 };
+	ULONG res = 0;
+	g_Data->ReadVirtual(reg.I32, code, sizeof(code), &res);
+
+	for (size_t i = 0; i < res; i++)
+	{
+		fprintf(pfile, "%02x ", code[i]);
+	}
+	fflush(pfile);
+	fclose(pfile);
 
 	delete[] Frames;
 }
@@ -518,6 +660,8 @@ EventCallbacks::Exception(
     // to be hit on the first chance.
     if (!FirstChance)
     {
+
+
         return DEBUG_STATUS_NO_CHANGE;
     }
 
@@ -531,10 +675,16 @@ EventCallbacks::Exception(
 			
 			BB_INFO* bi = cmi->bb_info_map[Exception->ExceptionAddress - cmi->image_base];
 
-			// printf("rva: 0x%lx\n", bi->voff);
+			if (!isFuzzMode) {
+				printf("rva: 0x%lx\n", bi->voff);
+			}
+
 
 			if (exit_bb_list[bi->voff] == 1) {
-				Print("Exit bb: %p\n", bi->voff);
+				if (!isFuzzMode) {
+					printf("hit exit bb: %p\n", bi->voff);
+				}
+				
 				g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
 				return DEBUG_STATUS_NO_DEBUGGEE;
 			}
@@ -552,15 +702,15 @@ EventCallbacks::Exception(
 		return DEBUG_STATUS_GO;
 	}
 
+
 	if (Exception->ExceptionCode == STATUS_ACCESS_VIOLATION) {
 		dump_stack_trace();
 		is_crash = 1;
 		g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
 		return DEBUG_STATUS_NO_DEBUGGEE;
 	}
-  
     
-    return DEBUG_STATUS_GO_HANDLED;
+    return DEBUG_STATUS_IGNORE_EVENT;
 }
 
 STDMETHODIMP
@@ -588,11 +738,19 @@ EventCallbacks::CreateProcess(
     UNREFERENCED_PARAMETER(InitialThreadHandle);
     UNREFERENCED_PARAMETER(ThreadDataOffset);
     UNREFERENCED_PARAMETER(StartOffset);
-    
-	// This would be where any executable image patching would go.
-	Print("Executable '%s' loaded at %I64x\n", ImageName, BaseOffset);
 
-	add_module_loaded_info((char*)ImageName, BaseOffset);
+	char szPath[MAX_PATH] = { 0 };
+
+	dwDebugeePid = GetProcessId((HANDLE)Handle);
+	
+	strcpy(szPath, ImageName);
+
+	if (!isFuzzMode) {
+		Print("Executable '%s' loaded at %I64x\n", szPath, BaseOffset);
+	}
+
+	
+	add_module_loaded_info((char*)szPath, BaseOffset);
     return DEBUG_STATUS_GO;
 }
 
@@ -613,9 +771,21 @@ EventCallbacks::LoadModule(
     UNREFERENCED_PARAMETER(ModuleName);
     UNREFERENCED_PARAMETER(CheckSum);
     UNREFERENCED_PARAMETER(TimeDateStamp);
+	char szPath[MAX_PATH] = { 0 };
 
-	// Any DLL-specific image patching goes here.
-	Print("DLL '%s' loaded at %I64x\n", ImageName, BaseOffset);
+	strcpy(szPath, ImageName);
+
+	if (strstr(ImageName, "\\") == NULL)
+	{
+		if (!isFuzzMode) {
+			printf("%s without full path\n", ImageName);
+		}
+	}
+
+	if (!isFuzzMode) {
+		Print("DLL '%s' loaded at %I64x\n", szPath, BaseOffset);
+	}
+
 	add_module_loaded_info((char*)ImageName, BaseOffset);
     return DEBUG_STATUS_GO;
 }
@@ -782,13 +952,14 @@ void init_debug_callback()
 }
 
 void
-start_debug(void)
+exec_testcase(void)
 {
     HRESULT Status;
 
 	is_crash = 0;
+
+	init_debug_callback();
     
-    // Everything's set up so start the app.
     if ((Status = g_Client->CreateProcess(0, g_CommandLine,
                                           DEBUG_ONLY_THIS_PROCESS)) != S_OK)
     {
@@ -799,7 +970,15 @@ start_debug(void)
 
 	save_status();
 	save_all_trace();
+	
+	GetModuleList(dwDebugeePid);
+	clean_resource();
+	
 
+	if (patch_to_binary) {
+		int patch_instr_count = patch_to_binary_file();
+		printf("patch %d basic block\n", patch_instr_count);
+	}
 
 	reset_cmi_info();
 
@@ -846,6 +1025,8 @@ using json = nlohmann::json;
 
 void parse_json(char* path)
 {
+
+
 	// read a JSON file
 	std::ifstream fs(path);
 	json j;
@@ -856,8 +1037,11 @@ void parse_json(char* path)
 	std::vector<std::string> args = j["args"];
 
 
-	bool patch_to_binary = j["patch_to_binary"];
+	patch_to_binary = j["patch_to_binary"];
 
+	if(j.contains("is_fuzz_mode")) {
+		isFuzzMode = j["is_fuzz_mode"];
+	}
 
 	for (size_t i = 0; i < basic_block_file_list.size(); i++)
 	{
@@ -870,15 +1054,41 @@ void parse_json(char* path)
 		strcat(g_CommandLine, " ");
 	}
 
+	char *ptr, *retptr;
+	int i = 0;
+
+	ptr = strdup(exit_basci_block_list.c_str());
+
+	unsigned int exit_bb = 0;
+
+	while ((retptr = strtok(ptr, ",")) != NULL) {
+		// printf("substr[%d]:%s\n", i++, retptr);
+		ptr = NULL;
+		sscanf(retptr, "%x", &exit_bb);
+
+		if (exit_bb != 0) {
+			exit_bb_list[exit_bb] = 1;
+		}
+	}
+
+	printf("isFuzzMode: %d\n", isFuzzMode);
+	printf("parse_json: %s\n", path);
+
 }
 
 
 void __cdecl
-main(int Argc, _In_reads_(Argc) PCSTR* Argv)
+main(int Argc, char** Argv)
 {
+	isFuzzMode = 0;
 
-	parse_json("D:\\code\\trapfuzzer\\config.json");
-	isFuzzMode = 1;
+	if (Argc == 2) {
+		parse_json(Argv[1]);
+	}
+	else {
+		parse_json("config.json");
+	}
+
 
 	if (isFuzzMode) {
 		init_tcp_client();
@@ -903,7 +1113,6 @@ main(int Argc, _In_reads_(Argc) PCSTR* Argv)
 				break;
 			}
 
-			puts("send");
 			iResult = recv(ConnectSocket, recvbuf, 4, 0);
 
 			if (iResult == -1) {
@@ -914,9 +1123,9 @@ main(int Argc, _In_reads_(Argc) PCSTR* Argv)
 
 
 
-		init_debug_callback();
-		start_debug();
-		clean_resource();
+		
+		exec_testcase();
+		
 
 		if (!isFuzzMode) {
 			break;
