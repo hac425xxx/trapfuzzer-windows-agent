@@ -972,6 +972,8 @@ exec_testcase(void)
 	save_all_trace();
 	
 	GetModuleList(dwDebugeePid);
+
+	KillProcess(dwDebugeePid);
 	clean_resource();
 	
 
