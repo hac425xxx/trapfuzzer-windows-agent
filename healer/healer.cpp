@@ -14,7 +14,6 @@
 #include <iostream>
 #include <string>
 
-
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -23,22 +22,22 @@
 
 #include "nlohmann/json.hpp"
 
-
-#include <map> 
+#include <map>
 #include <vector>
 
-typedef struct _BB_INFO {
+typedef struct _BB_INFO
+{
 	unsigned int voff;
 	unsigned int foff;
 	unsigned int instr_size;
 	unsigned char instr[4];
-}BB_INFO;
-
+} BB_INFO;
 
 typedef unsigned int PC_SIZE;
 
-typedef struct _COV_MOD_INFO {
-	std::map<unsigned int, BB_INFO*> bb_info_map;
+typedef struct _COV_MOD_INFO
+{
+	std::map<unsigned int, BB_INFO *> bb_info_map;
 	char module_name[1024];
 	char full_path[0x200];
 	ULONG64 image_base;
@@ -46,34 +45,31 @@ typedef struct _COV_MOD_INFO {
 	unsigned int rva_size;
 	unsigned int mod_id;
 	std::vector<unsigned int> bb_trace;
-}COV_MOD_INFO;
+} COV_MOD_INFO;
 
-
-std::vector<COV_MOD_INFO*> cov_mod_info_list;
+std::vector<COV_MOD_INFO *> cov_mod_info_list;
 unsigned int g_cov_mod_count = 0;
-
 
 int is_crash = 0;
 bool patch_to_binary = false;
 
-std::map<unsigned int, unsigned int>  exit_bb_list;
-
+std::map<unsigned int, unsigned int> exit_bb_list;
 
 PCSTR g_SymbolPath;
 char g_CommandLine[8 * MAX_PATH];
 BOOL g_Verbose;
 BOOL g_NeedVersionBps;
 
-IDebugClient* g_Client;
-IDebugControl* g_Control;
-IDebugDataSpaces* g_Data;
-IDebugRegisters* g_Registers;
-IDebugSymbols* g_Symbols;
+IDebugClient *g_Client;
+IDebugControl *g_Control;
+IDebugDataSpaces *g_Data;
+IDebugRegisters *g_Registers;
+IDebugSymbols *g_Symbols;
 
 struct BREAKPOINT
 {
-    IDebugBreakpoint* Bp;
-    ULONG Id;
+	IDebugBreakpoint *Bp;
+	ULONG Id;
 };
 
 BREAKPOINT g_GetVersionBp;
@@ -93,11 +89,9 @@ PCSTR UNUSUAL_EVENT_TITLE = "Unhandled Event";
 int isFuzzMode = 0;
 #include <TlHelp32.h>
 
-
 DWORD dwDebugeePid = 0;
 
-COV_MOD_INFO * get_cov_mod_info_by_module_name(char* mod_name);
-
+COV_MOD_INFO *get_cov_mod_info_by_module_name(char *mod_name);
 
 BOOL KillProcess(DWORD ProcessId)
 {
@@ -109,31 +103,34 @@ BOOL KillProcess(DWORD ProcessId)
 	return TRUE;
 }
 
-
-
-bool GetModuleList(DWORD dwPId) {
-	HANDLE        hModuleSnap = INVALID_HANDLE_VALUE;
-	MODULEENTRY32 me32 = { sizeof(MODULEENTRY32) };
+bool GetModuleList(DWORD dwPId)
+{
+	HANDLE hModuleSnap = INVALID_HANDLE_VALUE;
+	MODULEENTRY32 me32 = {sizeof(MODULEENTRY32)};
 	// 1. 创建一个模块相关的快照句柄
 	hModuleSnap = CreateToolhelp32Snapshot(
-		TH32CS_SNAPMODULE,  // 指定快照的类型
-		dwPId);            // 指定进程
+		TH32CS_SNAPMODULE, // 指定快照的类型
+		dwPId);			   // 指定进程
 	if (hModuleSnap == INVALID_HANDLE_VALUE)
 		return false;
 
 	// 2. 通过模块快照句柄获取第一个模块信息
-	if (!Module32First(hModuleSnap, &me32)) {
+	if (!Module32First(hModuleSnap, &me32))
+	{
 		CloseHandle(hModuleSnap);
 		return false;
 	}
 
 	// 3. 循环获取模块信息
-	do {
+	do
+	{
 
-		COV_MOD_INFO* cmi = get_cov_mod_info_by_module_name(me32.szModule);
+		COV_MOD_INFO *cmi = get_cov_mod_info_by_module_name(me32.szModule);
 
-		if (cmi != NULL) {
-			if (!isFuzzMode) {
+		if (cmi != NULL)
+		{
+			if (!isFuzzMode)
+			{
 				wprintf(L"模块基址:%d,模块大小：%d,模块名称:%s\n", me32.modBaseAddr, me32.modBaseSize, me32.szModule);
 			}
 			strcpy(cmi->full_path, me32.szExePath);
@@ -145,12 +142,12 @@ bool GetModuleList(DWORD dwPId) {
 	CloseHandle(hModuleSnap);
 }
 
-COV_MOD_INFO * get_cov_mod_info_by_pc(unsigned int pc)
+COV_MOD_INFO *get_cov_mod_info_by_pc(unsigned int pc)
 {
-	COV_MOD_INFO * ret = NULL;
+	COV_MOD_INFO *ret = NULL;
 	for (int i = 0; i < cov_mod_info_list.size(); i++)
 	{
-		COV_MOD_INFO* cmi = cov_mod_info_list[i];
+		COV_MOD_INFO *cmi = cov_mod_info_list[i];
 		unsigned int start = cmi->image_base;
 		unsigned int end = cmi->image_end;
 
@@ -164,14 +161,12 @@ COV_MOD_INFO * get_cov_mod_info_by_pc(unsigned int pc)
 	return ret;
 }
 
-
-
-COV_MOD_INFO * get_cov_mod_info_by_module_name(char* mod_name)
+COV_MOD_INFO *get_cov_mod_info_by_module_name(char *mod_name)
 {
-	COV_MOD_INFO * ret = NULL;
+	COV_MOD_INFO *ret = NULL;
 	for (int i = 0; i < cov_mod_info_list.size(); i++)
 	{
-		COV_MOD_INFO* cmi = cov_mod_info_list[i];
+		COV_MOD_INFO *cmi = cov_mod_info_list[i];
 		unsigned int start = cmi->image_base;
 		unsigned int end = cmi->image_end;
 
@@ -185,24 +180,22 @@ COV_MOD_INFO * get_cov_mod_info_by_module_name(char* mod_name)
 	return ret;
 }
 
-
-COV_MOD_INFO * reset_cmi_info()
+COV_MOD_INFO *reset_cmi_info()
 {
-	COV_MOD_INFO * ret = NULL;
+	COV_MOD_INFO *ret = NULL;
 	for (int i = 0; i < cov_mod_info_list.size(); i++)
 	{
-		COV_MOD_INFO* cmi = cov_mod_info_list[i];
+		COV_MOD_INFO *cmi = cov_mod_info_list[i];
 		cmi->bb_trace.clear();
 		cmi->image_base = 0;
 		cmi->image_end = 0;
 		cmi->full_path[0] = '\0';
-
 	}
 
 	return ret;
 }
 
-int do_patch_file(char* lpFileName, COV_MOD_INFO* cmi)
+int do_patch_file(char *lpFileName, COV_MOD_INFO *cmi)
 {
 	int count = 0;
 	HANDLE hFile = CreateFile(lpFileName, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -211,17 +204,18 @@ int do_patch_file(char* lpFileName, COV_MOD_INFO* cmi)
 		KillProcess(dwDebugeePid);
 		Sleep(500);
 
-		if (!isFuzzMode) {
+		if (!isFuzzMode)
+		{
 			std::cout << "File could not be opened.";
-			TCHAR* lpMsgBuf;
+			TCHAR *lpMsgBuf;
 			FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
-				FORMAT_MESSAGE_FROM_SYSTEM, NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)&lpMsgBuf, 0,
-				NULL);
+							  FORMAT_MESSAGE_FROM_SYSTEM,
+						  NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)&lpMsgBuf, 0,
+						  NULL);
 			puts(lpMsgBuf);
 		}
 		hFile = CreateFile(lpFileName, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	}
-
 
 	DWORD dwFileSize = GetFileSize(hFile, NULL);
 
@@ -241,11 +235,11 @@ int do_patch_file(char* lpFileName, COV_MOD_INFO* cmi)
 		return false;
 	}
 
-	char* file_base_addr = (char*)pvFile;
+	char *file_base_addr = (char *)pvFile;
 
 	for (size_t j = 0; j < cmi->bb_trace.size(); j++)
 	{
-		BB_INFO* bi = cmi->bb_info_map[cmi->bb_trace[j]];
+		BB_INFO *bi = cmi->bb_info_map[cmi->bb_trace[j]];
 		memcpy(file_base_addr + bi->foff, bi->instr, bi->instr_size);
 		count++;
 	}
@@ -264,9 +258,10 @@ int patch_to_binary_file()
 	int count = 0;
 	for (int i = 0; i < cov_mod_info_list.size(); i++)
 	{
-		COV_MOD_INFO* cmi = cov_mod_info_list[i];
+		COV_MOD_INFO *cmi = cov_mod_info_list[i];
 		fprintf(proc_map_fp, "%s, 0x%llx\n", cmi->full_path, cmi->image_base);
-		if (cmi->bb_trace.size() != 0) {
+		if (cmi->bb_trace.size() != 0)
+		{
 			count += do_patch_file(cmi->full_path, cmi);
 		}
 	}
@@ -277,15 +272,15 @@ int patch_to_binary_file()
 void save_all_trace()
 {
 
-	COV_MOD_INFO * ret = NULL;
+	COV_MOD_INFO *ret = NULL;
 	for (int i = 0; i < cov_mod_info_list.size(); i++)
 	{
-		COV_MOD_INFO* cmi = cov_mod_info_list[i];
+		COV_MOD_INFO *cmi = cov_mod_info_list[i];
 
-		char bb_file_name[0x100] = { 0 };
+		char bb_file_name[0x100] = {0};
 		sprintf(bb_file_name, "%s.trace", cmi->module_name);
 
-		FILE *pfile = fopen(bb_file_name, "w");   
+		FILE *pfile = fopen(bb_file_name, "w");
 
 		for (size_t i = 0; i < cmi->bb_trace.size(); i++)
 		{
@@ -297,10 +292,7 @@ void save_all_trace()
 	}
 }
 
-
 ULONG64 g_TraceFrom[3];
-
-
 
 //----------------------------------------------------------------------------
 //
@@ -315,13 +307,15 @@ int init_tcp_client()
 
 	WSADATA wsaData;
 	int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
-	if (iResult != NO_ERROR) {
+	if (iResult != NO_ERROR)
+	{
 		std::cout << "WSAStartup Failed with error: " << iResult << std::endl;
 		return 1;
 	}
 
 	ConnectSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (ConnectSocket == INVALID_SOCKET) {
+	if (ConnectSocket == INVALID_SOCKET)
+	{
 		std::cout << "Error at socket(): " << WSAGetLastError() << std::endl;
 		WSACleanup();
 		return 1;
@@ -336,18 +330,18 @@ int init_tcp_client()
 	addrServer.sin_port = htons(12241);
 	memset(&(addrServer.sin_zero), '\0', 8);
 
-	iResult = connect(ConnectSocket, (SOCKADDR*)&addrServer, sizeof(addrServer));
-	if (iResult == SOCKET_ERROR) {
+	iResult = connect(ConnectSocket, (SOCKADDR *)&addrServer, sizeof(addrServer));
+	if (iResult == SOCKET_ERROR)
+	{
 		closesocket(ConnectSocket);
 		std::cout << "Unable to connect to server: " << WSAGetLastError() << std::endl;
 		WSACleanup();
 		return 1;
 	}
 
-	int recvTimeout = 3000 * 1000;   //30s
-	// setsockopt(ConnectSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&recvTimeout, sizeof(int));
+	int recvTimeout = 3000 * 1000; //30s
+								   // setsockopt(ConnectSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&recvTimeout, sizeof(int));
 }
-
 
 void clean_resource()
 {
@@ -382,45 +376,41 @@ void clean_resource()
 	}
 }
 
-void
-Exit(int Code, _In_ _Printf_format_string_ PCSTR Format, ...)
+void Exit(int Code, _In_ _Printf_format_string_ PCSTR Format, ...)
 {
 
-    // Output an error message if given.
-    if (Format != NULL)
-    {
-        va_list Args;
+	// Output an error message if given.
+	if (Format != NULL)
+	{
+		va_list Args;
 
-        va_start(Args, Format);
-        vfprintf(stderr, Format, Args);
-        va_end(Args);
-    }
-    
-    exit(Code);
+		va_start(Args, Format);
+		vfprintf(stderr, Format, Args);
+		va_end(Args);
+	}
+
+	exit(Code);
 }
 
-void
-Print(_In_ _Printf_format_string_ PCSTR Format, ...)
+void Print(_In_ _Printf_format_string_ PCSTR Format, ...)
 {
-    va_list Args;
-    va_start(Args, Format);
-    vprintf(Format, Args);
-    va_end(Args);
+	va_list Args;
+	va_start(Args, Format);
+	vprintf(Format, Args);
+	va_end(Args);
 }
 
-void
-dump_stack_trace(void)
+void dump_stack_trace(void)
 {
 	HRESULT Status;
 	PDEBUG_STACK_FRAME Frames = NULL;
 	int Count = 50;
 
-	if (!isFuzzMode) {
+	if (!isFuzzMode)
+	{
 		printf("\nFirst %d frames of the call stack:\n", Count);
 	}
-	
 
-	
 	ULONG Filled;
 
 	Frames = new DEBUG_STACK_FRAME[Count];
@@ -429,20 +419,17 @@ dump_stack_trace(void)
 		Exit(1, "Unable to allocate stack frames\n");
 	}
 
-	if ((Status = g_Control->
-		GetStackTrace(0, 0, 0, Frames, Count, &Filled)) != S_OK)
+	if ((Status = g_Control->GetStackTrace(0, 0, 0, Frames, Count, &Filled)) != S_OK)
 	{
 		Exit(1, "GetStackTrace failed, 0x%X\n", Status);
 	}
-
-	
 
 	Count = Filled;
 
 	ULONG index;
 	ULONG64 base;
 
-	FILE *pfile = fopen("stacktrace.txt", "w");//以写的方式打开C.txt文件。   
+	FILE *pfile = fopen("stacktrace.txt", "w"); //以写的方式打开C.txt文件。
 
 	for (size_t i = 0; i < Count; i++)
 	{
@@ -457,9 +444,7 @@ dump_stack_trace(void)
 	fflush(pfile);
 	fclose(pfile);
 
-
-
-	pfile = fopen("crashinfo.txt", "w");//以写的方式打开C.txt文件。   
+	pfile = fopen("crashinfo.txt", "w"); //以写的方式打开C.txt文件。
 
 	DEBUG_VALUE reg = {0};
 	g_Registers->GetValue(g_EipIndex, &reg);
@@ -468,7 +453,7 @@ dump_stack_trace(void)
 
 	fprintf(pfile, "[code]\n");
 
-	unsigned char code[0x100] = { 0 };
+	unsigned char code[0x100] = {0};
 	ULONG res = 0;
 	g_Data->ReadVirtual(reg.I32, code, sizeof(code), &res);
 
@@ -482,13 +467,12 @@ dump_stack_trace(void)
 	delete[] Frames;
 }
 
-
-void
-save_status()
+void save_status()
 {
 	FILE *pfile = fopen("tracer.status", "w");
 
-	if (is_crash) {
+	if (is_crash)
+	{
 		fprintf(pfile, "crash");
 	}
 	else
@@ -496,10 +480,9 @@ save_status()
 		fprintf(pfile, "normal");
 	}
 
-	fflush(pfile); 
+	fflush(pfile);
 	fclose(pfile);
 }
-
 
 //----------------------------------------------------------------------------
 //
@@ -507,7 +490,7 @@ save_status()
 //
 //----------------------------------------------------------------------------
 
-char* getFileNameFromPath(char* path, char separator)
+char *getFileNameFromPath(char *path, char separator)
 {
 	if (path != nullptr)
 	{
@@ -523,10 +506,10 @@ char* getFileNameFromPath(char* path, char separator)
 	return path;
 }
 
-void add_module_loaded_info(char* fpath, ULONG64 base)
+void add_module_loaded_info(char *fpath, ULONG64 base)
 {
-	char* fname = getFileNameFromPath(fpath, '\\');
-	COV_MOD_INFO* cmi = get_cov_mod_info_by_module_name(fname);
+	char *fname = getFileNameFromPath(fpath, '\\');
+	COV_MOD_INFO *cmi = get_cov_mod_info_by_module_name(fname);
 	if (cmi != NULL)
 	{
 		cmi->image_base = base;
@@ -534,7 +517,6 @@ void add_module_loaded_info(char* fpath, ULONG64 base)
 		strcpy(cmi->full_path, fpath);
 	}
 }
-
 
 //----------------------------------------------------------------------------
 //
@@ -545,155 +527,148 @@ void add_module_loaded_info(char* fpath, ULONG64 base)
 class EventCallbacks : public DebugBaseEventCallbacks
 {
 public:
-    // IUnknown.
-    STDMETHOD_(ULONG, AddRef)(
-        THIS
-        );
-    STDMETHOD_(ULONG, Release)(
-        THIS
-        );
+	// IUnknown.
+	STDMETHOD_(ULONG, AddRef)
+	(
+		THIS);
+	STDMETHOD_(ULONG, Release)
+	(
+		THIS);
 
-    // IDebugEventCallbacks.
-    STDMETHOD(GetInterestMask)(
-        THIS_
-        _Out_ PULONG Mask
-        );
-    
-    STDMETHOD(Breakpoint)(
-        THIS_
-        _In_ PDEBUG_BREAKPOINT Bp
-        );
-    STDMETHOD(Exception)(
-        THIS_
-        _In_ PEXCEPTION_RECORD64 Exception,
-        _In_ ULONG FirstChance
-        );
-    STDMETHOD(CreateProcess)(
-        THIS_
-        _In_ ULONG64 ImageFileHandle,
-        _In_ ULONG64 Handle,
-        _In_ ULONG64 BaseOffset,
-        _In_ ULONG ModuleSize,
-        _In_ PCSTR ModuleName,
-        _In_ PCSTR ImageName,
-        _In_ ULONG CheckSum,
-        _In_ ULONG TimeDateStamp,
-        _In_ ULONG64 InitialThreadHandle,
-        _In_ ULONG64 ThreadDataOffset,
-        _In_ ULONG64 StartOffset
-        );
-    STDMETHOD(LoadModule)(
-        THIS_
-        _In_ ULONG64 ImageFileHandle,
-        _In_ ULONG64 BaseOffset,
-        _In_ ULONG ModuleSize,
-        _In_ PCSTR ModuleName,
-        _In_ PCSTR ImageName,
-        _In_ ULONG CheckSum,
-        _In_ ULONG TimeDateStamp
-        );
-    STDMETHOD(SessionStatus)(
-        THIS_
-        _In_ ULONG Status
-        );
+	// IDebugEventCallbacks.
+	STDMETHOD(GetInterestMask)
+	(
+		THIS_
+			_Out_ PULONG Mask);
+
+	STDMETHOD(Breakpoint)
+	(
+		THIS_
+			_In_ PDEBUG_BREAKPOINT Bp);
+	STDMETHOD(Exception)
+	(
+		THIS_
+			_In_ PEXCEPTION_RECORD64 Exception,
+		_In_ ULONG FirstChance);
+	STDMETHOD(CreateProcess)
+	(
+		THIS_
+			_In_ ULONG64 ImageFileHandle,
+		_In_ ULONG64 Handle,
+		_In_ ULONG64 BaseOffset,
+		_In_ ULONG ModuleSize,
+		_In_ PCSTR ModuleName,
+		_In_ PCSTR ImageName,
+		_In_ ULONG CheckSum,
+		_In_ ULONG TimeDateStamp,
+		_In_ ULONG64 InitialThreadHandle,
+		_In_ ULONG64 ThreadDataOffset,
+		_In_ ULONG64 StartOffset);
+	STDMETHOD(LoadModule)
+	(
+		THIS_
+			_In_ ULONG64 ImageFileHandle,
+		_In_ ULONG64 BaseOffset,
+		_In_ ULONG ModuleSize,
+		_In_ PCSTR ModuleName,
+		_In_ PCSTR ImageName,
+		_In_ ULONG CheckSum,
+		_In_ ULONG TimeDateStamp);
+	STDMETHOD(SessionStatus)
+	(
+		THIS_
+			_In_ ULONG Status);
 };
 
 STDMETHODIMP_(ULONG)
 EventCallbacks::AddRef(
-    THIS
-    )
+	THIS)
 {
-    // This class is designed to be static so
-    // there's no true refcount.
-    return 1;
+	// This class is designed to be static so
+	// there's no true refcount.
+	return 1;
 }
 
 STDMETHODIMP_(ULONG)
 EventCallbacks::Release(
-    THIS
-    )
+	THIS)
 {
-    // This class is designed to be static so
-    // there's no true refcount.
-    return 0;
+	// This class is designed to be static so
+	// there's no true refcount.
+	return 0;
 }
 
 STDMETHODIMP
 EventCallbacks::GetInterestMask(
-    THIS_
-    _Out_ PULONG Mask
-    )
+	THIS_
+		_Out_ PULONG Mask)
 {
-    *Mask =
-        DEBUG_EVENT_BREAKPOINT |
-        DEBUG_EVENT_EXCEPTION |
-        DEBUG_EVENT_CREATE_PROCESS |
-        DEBUG_EVENT_LOAD_MODULE |
-        DEBUG_EVENT_SESSION_STATUS;
-    return S_OK;
+	*Mask =
+		DEBUG_EVENT_BREAKPOINT |
+		DEBUG_EVENT_EXCEPTION |
+		DEBUG_EVENT_CREATE_PROCESS |
+		DEBUG_EVENT_LOAD_MODULE |
+		DEBUG_EVENT_SESSION_STATUS;
+	return S_OK;
 }
 
 STDMETHODIMP
 EventCallbacks::Breakpoint(
-    THIS_
-    _In_ PDEBUG_BREAKPOINT Bp
-    )
+	THIS_
+		_In_ PDEBUG_BREAKPOINT Bp)
 {
-   
-    return DEBUG_STATUS_NO_CHANGE;
-   
+
+	return DEBUG_STATUS_NO_CHANGE;
 }
 
 STDMETHODIMP
 EventCallbacks::Exception(
-    THIS_
-    _In_ PEXCEPTION_RECORD64 Exception,
-    _In_ ULONG FirstChance
-    )
+	THIS_
+		_In_ PEXCEPTION_RECORD64 Exception,
+	_In_ ULONG FirstChance)
 {
 	UCHAR Instr;
 	ULONG Done;
-    // We want to handle these exceptions on the first
-    // chance to make it look like no exception ever
-    // happened.  Handling them on the second chance would
-    // allow an exception handler somewhere in the app
-    // to be hit on the first chance.
-    if (!FirstChance)
-    {
+	// We want to handle these exceptions on the first
+	// chance to make it look like no exception ever
+	// happened.  Handling them on the second chance would
+	// allow an exception handler somewhere in the app
+	// to be hit on the first chance.
+	if (!FirstChance)
+	{
 
-
-        return DEBUG_STATUS_NO_CHANGE;
-    }
-
+		return DEBUG_STATUS_NO_CHANGE;
+	}
 
 	if (Exception->ExceptionCode == STATUS_BREAKPOINT)
 	{
-		
-		COV_MOD_INFO * cmi = get_cov_mod_info_by_pc(Exception->ExceptionAddress);
+
+		COV_MOD_INFO *cmi = get_cov_mod_info_by_pc(Exception->ExceptionAddress);
 		if (cmi != NULL)
 		{
-			
-			BB_INFO* bi = cmi->bb_info_map[Exception->ExceptionAddress - cmi->image_base];
 
-			if (!isFuzzMode) {
+			BB_INFO *bi = cmi->bb_info_map[Exception->ExceptionAddress - cmi->image_base];
+
+			if (!isFuzzMode)
+			{
 				printf("rva: 0x%lx\n", bi->voff);
 			}
 
-
-			if (exit_bb_list[bi->voff] == 1) {
-				if (!isFuzzMode) {
+			if (exit_bb_list[bi->voff] == 1)
+			{
+				if (!isFuzzMode)
+				{
 					printf("hit exit bb: %p\n", bi->voff);
 				}
-				
+
 				g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
 				return DEBUG_STATUS_NO_DEBUGGEE;
 			}
 
-
 			cmi->bb_trace.push_back(bi->voff);
 
 			if (g_Data->WriteVirtual(Exception->ExceptionAddress, bi->instr,
-				bi->instr_size, &Done) != S_OK ||
+									 bi->instr_size, &Done) != S_OK ||
 				Done != bi->instr_size)
 			{
 				return DEBUG_STATUS_NO_CHANGE;
@@ -702,135 +677,134 @@ EventCallbacks::Exception(
 		return DEBUG_STATUS_GO;
 	}
 
-
-	if (Exception->ExceptionCode == STATUS_ACCESS_VIOLATION) {
+	if (Exception->ExceptionCode == STATUS_ACCESS_VIOLATION)
+	{
 		dump_stack_trace();
 		is_crash = 1;
 		g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
 		return DEBUG_STATUS_NO_DEBUGGEE;
 	}
-    
-    return DEBUG_STATUS_IGNORE_EVENT;
+
+	return DEBUG_STATUS_IGNORE_EVENT;
 }
 
 STDMETHODIMP
 EventCallbacks::CreateProcess(
-    THIS_
-    _In_ ULONG64 ImageFileHandle,
-    _In_ ULONG64 Handle,
-    _In_ ULONG64 BaseOffset,
-    _In_ ULONG ModuleSize,
-    _In_ PCSTR ModuleName,
-    _In_ PCSTR ImageName,
-    _In_ ULONG CheckSum,
-    _In_ ULONG TimeDateStamp,
-    _In_ ULONG64 InitialThreadHandle,
-    _In_ ULONG64 ThreadDataOffset,
-    _In_ ULONG64 StartOffset
-    )
+	THIS_
+		_In_ ULONG64 ImageFileHandle,
+	_In_ ULONG64 Handle,
+	_In_ ULONG64 BaseOffset,
+	_In_ ULONG ModuleSize,
+	_In_ PCSTR ModuleName,
+	_In_ PCSTR ImageName,
+	_In_ ULONG CheckSum,
+	_In_ ULONG TimeDateStamp,
+	_In_ ULONG64 InitialThreadHandle,
+	_In_ ULONG64 ThreadDataOffset,
+	_In_ ULONG64 StartOffset)
 {
-    UNREFERENCED_PARAMETER(ImageFileHandle);
-    UNREFERENCED_PARAMETER(Handle);
-    UNREFERENCED_PARAMETER(ModuleSize);
-    UNREFERENCED_PARAMETER(ModuleName);
-    UNREFERENCED_PARAMETER(CheckSum);
-    UNREFERENCED_PARAMETER(TimeDateStamp);
-    UNREFERENCED_PARAMETER(InitialThreadHandle);
-    UNREFERENCED_PARAMETER(ThreadDataOffset);
-    UNREFERENCED_PARAMETER(StartOffset);
+	UNREFERENCED_PARAMETER(ImageFileHandle);
+	UNREFERENCED_PARAMETER(Handle);
+	UNREFERENCED_PARAMETER(ModuleSize);
+	UNREFERENCED_PARAMETER(ModuleName);
+	UNREFERENCED_PARAMETER(CheckSum);
+	UNREFERENCED_PARAMETER(TimeDateStamp);
+	UNREFERENCED_PARAMETER(InitialThreadHandle);
+	UNREFERENCED_PARAMETER(ThreadDataOffset);
+	UNREFERENCED_PARAMETER(StartOffset);
 
-	char szPath[MAX_PATH] = { 0 };
+	char szPath[MAX_PATH] = {0};
 
 	dwDebugeePid = GetProcessId((HANDLE)Handle);
-	
+
 	strcpy(szPath, ImageName);
 
-	if (!isFuzzMode) {
+	if (!isFuzzMode)
+	{
 		Print("Executable '%s' loaded at %I64x\n", szPath, BaseOffset);
 	}
 
-	
-	add_module_loaded_info((char*)szPath, BaseOffset);
-    return DEBUG_STATUS_GO;
+	add_module_loaded_info((char *)szPath, BaseOffset);
+	return DEBUG_STATUS_GO;
 }
 
 STDMETHODIMP
 EventCallbacks::LoadModule(
-    THIS_
-    _In_ ULONG64 ImageFileHandle,
-    _In_ ULONG64 BaseOffset,
-    _In_ ULONG ModuleSize,
-    _In_ PCSTR ModuleName,
-    _In_ PCSTR ImageName,
-    _In_ ULONG CheckSum,
-    _In_ ULONG TimeDateStamp
-    )
+	THIS_
+		_In_ ULONG64 ImageFileHandle,
+	_In_ ULONG64 BaseOffset,
+	_In_ ULONG ModuleSize,
+	_In_ PCSTR ModuleName,
+	_In_ PCSTR ImageName,
+	_In_ ULONG CheckSum,
+	_In_ ULONG TimeDateStamp)
 {
-    UNREFERENCED_PARAMETER(ImageFileHandle);
-    UNREFERENCED_PARAMETER(ModuleSize);
-    UNREFERENCED_PARAMETER(ModuleName);
-    UNREFERENCED_PARAMETER(CheckSum);
-    UNREFERENCED_PARAMETER(TimeDateStamp);
-	char szPath[MAX_PATH] = { 0 };
+	UNREFERENCED_PARAMETER(ImageFileHandle);
+	UNREFERENCED_PARAMETER(ModuleSize);
+	UNREFERENCED_PARAMETER(ModuleName);
+	UNREFERENCED_PARAMETER(CheckSum);
+	UNREFERENCED_PARAMETER(TimeDateStamp);
+	char szPath[MAX_PATH] = {0};
 
 	strcpy(szPath, ImageName);
 
 	if (strstr(ImageName, "\\") == NULL)
 	{
-		if (!isFuzzMode) {
+		if (!isFuzzMode)
+		{
 			printf("%s without full path\n", ImageName);
 		}
 	}
 
-	if (!isFuzzMode) {
+	if (!isFuzzMode)
+	{
 		Print("DLL '%s' loaded at %I64x\n", szPath, BaseOffset);
 	}
 
-	add_module_loaded_info((char*)ImageName, BaseOffset);
-    return DEBUG_STATUS_GO;
+	add_module_loaded_info((char *)ImageName, BaseOffset);
+	return DEBUG_STATUS_GO;
 }
 
 STDMETHODIMP
 EventCallbacks::SessionStatus(
-    THIS_
-    _In_ ULONG SessionStatus
-    )
+	THIS_
+		_In_ ULONG SessionStatus)
 {
-    // A session isn't fully active until WaitForEvent
-    // has been called and has processed the initial
-    // debug events.  We need to wait for activation
-    // before we query information about the session
-    // as not all information is available until the
-    // session is fully active.  We could put these
-    // queries into CreateProcess as that happens
-    // early and when the session is fully active, but
-    // for example purposes we'll wait for an
-    // active SessionStatus callback.
-    // In non-callback applications this work can just
-    // be done after the first successful WaitForEvent.
-    if (SessionStatus != DEBUG_SESSION_ACTIVE)
-    {
-        return S_OK;
-    }
-    
-    HRESULT Status;
-    
-    //
-    // Find the register index for eax as we'll need
-    // to access eax.
-    //
+	// A session isn't fully active until WaitForEvent
+	// has been called and has processed the initial
+	// debug events.  We need to wait for activation
+	// before we query information about the session
+	// as not all information is available until the
+	// session is fully active.  We could put these
+	// queries into CreateProcess as that happens
+	// early and when the session is fully active, but
+	// for example purposes we'll wait for an
+	// active SessionStatus callback.
+	// In non-callback applications this work can just
+	// be done after the first successful WaitForEvent.
+	if (SessionStatus != DEBUG_SESSION_ACTIVE)
+	{
+		return S_OK;
+	}
 
-    if ((Status = g_Registers->GetIndexByName("eax", &g_EaxIndex)) != S_OK)
-    {
-        Exit(1, "GetIndexByName failed, 0x%X\n", Status);
-    }
+	HRESULT Status;
+
+	//
+	// Find the register index for eax as we'll need
+	// to access eax.
+	//
+
+	if ((Status = g_Registers->GetIndexByName("eax", &g_EaxIndex)) != S_OK)
+	{
+		Exit(1, "GetIndexByName failed, 0x%X\n", Status);
+	}
 
 	if ((Status = g_Registers->GetIndexByName("eip", &g_EipIndex)) != S_OK)
 	{
 		Exit(1, "GetIndexByName failed, 0x%X\n", Status);
 	}
-	
-    return S_OK;
+
+	return S_OK;
 }
 
 EventCallbacks g_EventCb;
@@ -841,57 +815,53 @@ EventCallbacks g_EventCb;
 //
 //----------------------------------------------------------------------------
 
-void
-CreateInterfaces(void)
+void CreateInterfaces(void)
 {
-    SYSTEM_INFO SysInfo;
-    
-    // For purposes of keeping this example simple the
-    // code only works on x86 machines.  There's no reason
-    // that it couldn't be made to work on all processors, though.
-    GetSystemInfo(&SysInfo);
-    if (SysInfo.wProcessorArchitecture != PROCESSOR_ARCHITECTURE_INTEL)
-    {
-        Exit(1, "This program only runs on x86 machines.\n");
-    }
+	SYSTEM_INFO SysInfo;
 
-    // Get default version information.
-    g_OsVer.dwOSVersionInfoSize = sizeof(g_OsVer);
-    if (!GetVersionEx(&g_OsVer))
-    {
-        Exit(1, "GetVersionEx failed, %d\n", (long)GetLastError());
-    }
+	// For purposes of keeping this example simple the
+	// code only works on x86 machines.  There's no reason
+	// that it couldn't be made to work on all processors, though.
+	GetSystemInfo(&SysInfo);
+	if (SysInfo.wProcessorArchitecture != PROCESSOR_ARCHITECTURE_INTEL)
+	{
+		Exit(1, "This program only runs on x86 machines.\n");
+	}
 
-    HRESULT Status;
+	// Get default version information.
+	g_OsVer.dwOSVersionInfoSize = sizeof(g_OsVer);
+	if (!GetVersionEx(&g_OsVer))
+	{
+		Exit(1, "GetVersionEx failed, %d\n", (long)GetLastError());
+	}
 
-    // Start things off by getting an initial interface from
-    // the engine.  This can be any engine interface but is
-    // generally IDebugClient as the client interface is
-    // where sessions are started.
-    if ((Status = DebugCreate(__uuidof(IDebugClient),
-                              (void**)&g_Client)) != S_OK)
-    {
-        Exit(1, "DebugCreate failed, 0x%X\n", Status);
-    }
+	HRESULT Status;
 
-    // Query for some other interfaces that we'll need.
-    if ((Status = g_Client->QueryInterface(__uuidof(IDebugControl),
-                                           (void**)&g_Control)) != S_OK ||
-        (Status = g_Client->QueryInterface(__uuidof(IDebugDataSpaces),
-                                           (void**)&g_Data)) != S_OK ||
-        (Status = g_Client->QueryInterface(__uuidof(IDebugRegisters),
-                                           (void**)&g_Registers)) != S_OK ||
-        (Status = g_Client->QueryInterface(__uuidof(IDebugSymbols),
-                                           (void**)&g_Symbols)) != S_OK)
-    {
-        Exit(1, "QueryInterface failed, 0x%X\n", Status);
-    }
+	// Start things off by getting an initial interface from
+	// the engine.  This can be any engine interface but is
+	// generally IDebugClient as the client interface is
+	// where sessions are started.
+	if ((Status = DebugCreate(__uuidof(IDebugClient),
+							  (void **)&g_Client)) != S_OK)
+	{
+		Exit(1, "DebugCreate failed, 0x%X\n", Status);
+	}
 
+	// Query for some other interfaces that we'll need.
+	if ((Status = g_Client->QueryInterface(__uuidof(IDebugControl),
+										   (void **)&g_Control)) != S_OK ||
+		(Status = g_Client->QueryInterface(__uuidof(IDebugDataSpaces),
+										   (void **)&g_Data)) != S_OK ||
+		(Status = g_Client->QueryInterface(__uuidof(IDebugRegisters),
+										   (void **)&g_Registers)) != S_OK ||
+		(Status = g_Client->QueryInterface(__uuidof(IDebugSymbols),
+										   (void **)&g_Symbols)) != S_OK)
+	{
+		Exit(1, "QueryInterface failed, 0x%X\n", Status);
+	}
 }
 
-
-void
-handle_event_loop(void)
+void handle_event_loop(void)
 {
 	HRESULT Status;
 	ULONG ExecStatus;
@@ -899,9 +869,8 @@ handle_event_loop(void)
 	for (;;)
 	{
 		if ((Status = g_Control->WaitForEvent(DEBUG_WAIT_DEFAULT,
-			INFINITE)) != S_OK)
+											  INFINITE)) != S_OK)
 		{
-
 
 			// Check and see whether the session is running or not.
 			if (g_Control->GetExecutionStatus(&ExecStatus) == S_OK &&
@@ -916,14 +885,13 @@ handle_event_loop(void)
 		}
 
 		g_Control->GetExecutionStatus(&ExecStatus);
-		if (ExecStatus == DEBUG_STATUS_NO_DEBUGGEE) {
+		if (ExecStatus == DEBUG_STATUS_NO_DEBUGGEE)
+		{
 			break;
 		}
 
-
 		// User chose to ignore so restart things.
-		if ((Status = g_Control->
-			SetExecutionStatus(DEBUG_STATUS_GO_HANDLED)) != S_OK)
+		if ((Status = g_Control->SetExecutionStatus(DEBUG_STATUS_GO_HANDLED)) != S_OK)
 		{
 			Exit(1, "SetExecutionStatus failed, 0x%X\n", Status);
 		}
@@ -951,48 +919,42 @@ void init_debug_callback()
 	}
 }
 
-void
-exec_testcase(void)
+void exec_testcase(void)
 {
-    HRESULT Status;
+	HRESULT Status;
 
 	is_crash = 0;
 
 	init_debug_callback();
-    
-    if ((Status = g_Client->CreateProcess(0, g_CommandLine,
-                                          DEBUG_ONLY_THIS_PROCESS)) != S_OK)
-    {
-        Exit(1, "CreateProcess failed, 0x%X\n", Status);
-    }
+
+	if ((Status = g_Client->CreateProcess(0, g_CommandLine,
+										  DEBUG_ONLY_THIS_PROCESS)) != S_OK)
+	{
+		Exit(1, "CreateProcess failed, 0x%X\n", Status);
+	}
 
 	handle_event_loop();
 
 	save_status();
 	save_all_trace();
-	
+
 	GetModuleList(dwDebugeePid);
 
 	KillProcess(dwDebugeePid);
 	clean_resource();
-	
 
-	if (patch_to_binary) {
+	if (patch_to_binary)
+	{
 		int patch_instr_count = patch_to_binary_file();
 		printf("patch %d basic block\n", patch_instr_count);
 	}
 
 	reset_cmi_info();
-
 }
 
-
-
-
-
-void load_bb_info(char* fpath)
+void load_bb_info(char *fpath)
 {
-	COV_MOD_INFO* cmi = new COV_MOD_INFO;
+	COV_MOD_INFO *cmi = new COV_MOD_INFO;
 
 	FILE *fp = fopen(fpath, "rb");
 	fread(&cmi->rva_size, 4, 1, fp);
@@ -1001,11 +963,11 @@ void load_bb_info(char* fpath)
 	fread(&fname_sz, 4, 1, fp);
 	fread(cmi->module_name, fname_sz, 1, fp);
 
-	BB_INFO tmp = { 0 };
+	BB_INFO tmp = {0};
 	while (fread(&tmp, 4 * 3, 1, fp) == 1)
 	{
 		fread(&tmp.instr, tmp.instr_size, 1, fp);
-		BB_INFO* info = (BB_INFO*)malloc(sizeof(BB_INFO));
+		BB_INFO *info = (BB_INFO *)malloc(sizeof(BB_INFO));
 		memcpy(info, &tmp, sizeof(BB_INFO));
 		cmi->bb_info_map[info->voff] = info;
 		//printf("voff:0x%X\n", info->voff);
@@ -1025,9 +987,8 @@ void load_bb_info(char* fpath)
 using namespace std;
 using json = nlohmann::json;
 
-void parse_json(char* path)
+void parse_json(char *path)
 {
-
 
 	// read a JSON file
 	std::ifstream fs(path);
@@ -1038,16 +999,16 @@ void parse_json(char* path)
 	std::vector<std::string> basic_block_file_list = j["basic_block_file_path"];
 	std::vector<std::string> args = j["args"];
 
-
 	patch_to_binary = j["patch_to_binary"];
 
-	if(j.contains("is_fuzz_mode")) {
+	if (j.contains("is_fuzz_mode"))
+	{
 		isFuzzMode = j["is_fuzz_mode"];
 	}
 
 	for (size_t i = 0; i < basic_block_file_list.size(); i++)
 	{
-		load_bb_info((char*)basic_block_file_list[i].c_str());
+		load_bb_info((char *)basic_block_file_list[i].c_str());
 	}
 
 	for (size_t i = 0; i < args.size(); i++)
@@ -1063,87 +1024,88 @@ void parse_json(char* path)
 
 	unsigned int exit_bb = 0;
 
-	while ((retptr = strtok(ptr, ",")) != NULL) {
+	while ((retptr = strtok(ptr, ",")) != NULL)
+	{
 		// printf("substr[%d]:%s\n", i++, retptr);
 		ptr = NULL;
 		sscanf(retptr, "%x", &exit_bb);
 
-		if (exit_bb != 0) {
+		if (exit_bb != 0)
+		{
 			exit_bb_list[exit_bb] = 1;
 		}
 	}
 
 	printf("isFuzzMode: %d\n", isFuzzMode);
 	printf("parse_json: %s\n", path);
-
 }
 
-
-void __cdecl
-main(int Argc, char** Argv)
+void __cdecl main(int Argc, char **Argv)
 {
 	isFuzzMode = 0;
 
-	if (Argc == 2) {
+	if (Argc == 2)
+	{
 		parse_json(Argv[1]);
 	}
-	else {
+	else
+	{
 		parse_json("config.json");
 	}
 
-
-	if (isFuzzMode) {
+	if (isFuzzMode)
+	{
 		init_tcp_client();
 	}
 
-	
 	int iResult;
 
-	char sendbuf[0x100] = { 0 };
-	char recvbuf[0x100] = { 0 };
+	char sendbuf[0x100] = {0};
+	char recvbuf[0x100] = {0};
 
 	for (;;)
 	{
 
-		if (isFuzzMode) {
+		if (isFuzzMode)
+		{
 
-			*(unsigned int*)sendbuf = 0x1122ddaa;
+			*(unsigned int *)sendbuf = 0x1122ddaa;
 			iResult = send(ConnectSocket, sendbuf, 4, 0);
 
-			if (iResult == -1) {
+			if (iResult == -1)
+			{
 				puts("send start packet failed!");
 				break;
 			}
 
 			iResult = recv(ConnectSocket, recvbuf, 4, 0);
 
-			if (iResult == -1) {
+			if (iResult == -1)
+			{
 				puts("recv from tracer failed!");
 				break;
 			}
 		}
 
-
-
-		
 		exec_testcase();
-		
 
-		if (!isFuzzMode) {
+		if (!isFuzzMode)
+		{
 			break;
 		}
 
-		if (isFuzzMode) {
+		if (isFuzzMode)
+		{
 
-			*(unsigned int*)sendbuf = 0x33333333;
+			*(unsigned int *)sendbuf = 0x33333333;
 			iResult = send(ConnectSocket, sendbuf, 4, 0);
-			if (iResult == -1) {
+			if (iResult == -1)
+			{
 				puts("send finish packet failed!");
 				break;
 			}
 		}
-
 	}
 
-    Exit(0, "");
+	Exit(0, "");
 }
