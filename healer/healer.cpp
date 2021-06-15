@@ -406,11 +406,6 @@ void dump_stack_trace(void)
 	PDEBUG_STACK_FRAME Frames = NULL;
 	int Count = 50;
 
-	if (!isFuzzMode)
-	{
-		printf("\nFirst %d frames of the call stack:\n", Count);
-	}
-
 	ULONG Filled;
 
 	Frames = new DEBUG_STACK_FRAME[Count];
@@ -422,6 +417,12 @@ void dump_stack_trace(void)
 	if ((Status = g_Control->GetStackTrace(0, 0, 0, Frames, Count, &Filled)) != S_OK)
 	{
 		Exit(1, "GetStackTrace failed, 0x%X\n", Status);
+	}
+
+
+	if (!isFuzzMode)
+	{
+		printf("\nFirst %d frames of the call stack:\n", Filled);
 	}
 
 	Count = Filled;
@@ -651,14 +652,14 @@ EventCallbacks::Exception(
 
 			if (!isFuzzMode)
 			{
-				printf("rva: 0x%lx\n", bi->voff);
+				printf("exec-bb: %s!0x%lx\n", cmi->module_name, bi->voff);
 			}
 
 			if (exit_bb_list[bi->voff] == 1)
 			{
 				if (!isFuzzMode)
 				{
-					printf("hit exit bb: %p\n", bi->voff);
+					printf("exit-bb: %s!0x%lx\n", cmi->module_name, bi->voff);
 				}
 
 				g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
