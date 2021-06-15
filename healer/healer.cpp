@@ -404,7 +404,7 @@ void dump_stack_trace(void)
 {
 	HRESULT Status;
 	PDEBUG_STACK_FRAME Frames = NULL;
-	int Count = 50;
+	int Count = 8;
 
 	ULONG Filled;
 
