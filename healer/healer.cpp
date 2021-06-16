@@ -988,6 +988,8 @@ void load_bb_info(char *fpath)
 using namespace std;
 using json = nlohmann::json;
 
+unsigned int server_sock_port = 11241;
+
 void parse_json(char *path)
 {
 
@@ -1005,6 +1007,11 @@ void parse_json(char *path)
 	if (j.contains("is_fuzz_mode"))
 	{
 		isFuzzMode = j["is_fuzz_mode"];
+	}
+
+	if (j.contains("server_sock_port"))
+	{
+		server_sock_port = j["server_sock_port"];
 	}
 
 	for (size_t i = 0; i < basic_block_file_list.size(); i++)
