@@ -53,6 +53,8 @@ unsigned int g_cov_mod_count = 0;
 int is_crash = 0;
 bool patch_to_binary = false;
 
+unsigned int server_sock_port = 11241;
+
 std::map<unsigned int, unsigned int> exit_bb_list;
 
 PCSTR g_SymbolPath;
@@ -327,7 +329,7 @@ int init_tcp_client()
 	addrServer.sin_family = AF_INET;
 	InetPton(AF_INET, "127.0.0.1", &addrServer.sin_addr.s_addr);
 
-	addrServer.sin_port = htons(12241);
+	addrServer.sin_port = htons(server_sock_port);
 	memset(&(addrServer.sin_zero), '\0', 8);
 
 	iResult = connect(ConnectSocket, (SOCKADDR *)&addrServer, sizeof(addrServer));
@@ -988,7 +990,7 @@ void load_bb_info(char *fpath)
 using namespace std;
 using json = nlohmann::json;
 
-unsigned int server_sock_port = 11241;
+
 
 void parse_json(char *path)
 {
