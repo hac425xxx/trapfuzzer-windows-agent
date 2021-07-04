@@ -928,7 +928,7 @@ void exec_testcase(void)
 
 	is_crash = 0;
 
-	init_debug_callback();
+	// init_debug_callback();
 
 	if ((Status = g_Client->CreateProcess(0, g_CommandLine,
 										  DEBUG_ONLY_THIS_PROCESS)) != S_OK)
@@ -943,8 +943,13 @@ void exec_testcase(void)
 
 	GetModuleList(dwDebugeePid);
 
-	KillProcess(dwDebugeePid);
-	clean_resource();
+
+	g_Client->TerminateProcesses();
+	g_Client->DetachProcesses();
+	g_Client->EndSession(DEBUG_END_PASSIVE);
+
+	// KillProcess(dwDebugeePid);
+	// clean_resource();
 
 	if (patch_to_binary)
 	{
@@ -1072,6 +1077,8 @@ void __cdecl main(int Argc, char **Argv)
 
 	char sendbuf[0x100] = {0};
 	char recvbuf[0x100] = {0};
+
+	init_debug_callback();
 
 	for (;;)
 	{
