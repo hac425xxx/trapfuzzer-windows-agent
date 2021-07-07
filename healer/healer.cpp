@@ -25,6 +25,8 @@
 #include <map>
 #include <vector>
 
+#include "out.hpp"
+
 typedef struct _BB_INFO
 {
 	unsigned int voff;
@@ -89,6 +91,7 @@ PCSTR UNUSUAL_EVENT_MSG = "An unusual event occurred.  Ignore it?";
 PCSTR UNUSUAL_EVENT_TITLE = "Unhandled Event";
 
 int isFuzzMode = 0;
+
 #include <TlHelp32.h>
 
 DWORD dwDebugeePid = 0;
@@ -126,15 +129,17 @@ bool GetModuleList(DWORD dwPId)
 	// 3. 循环获取模块信息
 	do
 	{
-
 		COV_MOD_INFO *cmi = get_cov_mod_info_by_module_name(me32.szModule);
-
 		if (cmi != NULL)
 		{
 			if (!isFuzzMode)
 			{
-				wprintf(L"模块基址:%d,模块大小：%d,模块名称:%s\n", me32.modBaseAddr, me32.modBaseSize, me32.szModule);
+				printf("add cmi base:%p, size:%x, name:%s, full path:%s\n", me32.modBaseAddr, me32.modBaseSize, me32.szModule, me32.szExePath);
 			}
+
+			cmi->image_base = (ULONG64)me32.modBaseAddr;
+			cmi->image_end = cmi->image_base + cmi->rva_size;
+
 			strcpy(cmi->full_path, me32.szExePath);
 		}
 
@@ -421,7 +426,6 @@ void dump_stack_trace(void)
 		Exit(1, "GetStackTrace failed, 0x%X\n", Status);
 	}
 
-
 	if (!isFuzzMode)
 	{
 		printf("\nFirst %d frames of the call stack:\n", Filled);
@@ -454,11 +458,11 @@ void dump_stack_trace(void)
 
 	fprintf(pfile, "pc: 0x%lx\n", reg.I32);
 
-	fprintf(pfile, "[code]\n");
+	fprintf(pfile, "[code %p -- %p]\n", reg.I32 - 0x20, reg.I32 - 0x20 + 0x100);
 
 	unsigned char code[0x100] = {0};
 	ULONG res = 0;
-	g_Data->ReadVirtual(reg.I32, code, sizeof(code), &res);
+	g_Data->ReadVirtual(reg.I32 - 0x20, code, sizeof(code), &res);
 
 	for (size_t i = 0; i < res; i++)
 	{
@@ -515,6 +519,12 @@ void add_module_loaded_info(char *fpath, ULONG64 base)
 	COV_MOD_INFO *cmi = get_cov_mod_info_by_module_name(fname);
 	if (cmi != NULL)
 	{
+		if (cmi->image_base != 0)
+		{
+			printf("found mutiple %s, pre addr:%p, now:%p\n", cmi->module_name, cmi->image_base, base);
+			return;
+		}
+
 		cmi->image_base = base;
 		cmi->image_end = base + cmi->rva_size;
 		strcpy(cmi->full_path, fpath);
@@ -647,6 +657,13 @@ EventCallbacks::Exception(
 	{
 
 		COV_MOD_INFO *cmi = get_cov_mod_info_by_pc(Exception->ExceptionAddress);
+
+		if (cmi == NULL)
+		{
+			GetModuleList(dwDebugeePid);
+			cmi = get_cov_mod_info_by_pc(Exception->ExceptionAddress);
+		}
+
 		if (cmi != NULL)
 		{
 
@@ -677,6 +694,11 @@ EventCallbacks::Exception(
 				return DEBUG_STATUS_NO_CHANGE;
 			}
 		}
+		else
+		{
+			printf("bb not found !!!: 0x%lx\n", Exception->ExceptionAddress);
+		}
+
 		return DEBUG_STATUS_GO;
 	}
 
@@ -684,7 +706,26 @@ EventCallbacks::Exception(
 	{
 		dump_stack_trace();
 		is_crash = 1;
+
+		if (!isFuzzMode)
+		{
+			g_Client->SetOutputCallbacks(&g_OutputCb);
+			g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "r", DEBUG_EXECUTE_ECHO);
+			g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "db @eip - 4", DEBUG_EXECUTE_ECHO);
+
+			char input_cmd[0x200];
+			while (1)
+			{
+				std::cin.getline(input_cmd, 0x200);
+				g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, input_cmd, DEBUG_EXECUTE_ECHO);
+			}
+
+			g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "kb 8", DEBUG_EXECUTE_ECHO);
+			g_Client->SetOutputCallbacks(NULL);
+		}
+
 		g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
+
 		return DEBUG_STATUS_NO_DEBUGGEE;
 	}
 
@@ -716,18 +757,7 @@ EventCallbacks::CreateProcess(
 	UNREFERENCED_PARAMETER(ThreadDataOffset);
 	UNREFERENCED_PARAMETER(StartOffset);
 
-	char szPath[MAX_PATH] = {0};
-
 	dwDebugeePid = GetProcessId((HANDLE)Handle);
-
-	strcpy(szPath, ImageName);
-
-	if (!isFuzzMode)
-	{
-		Print("Executable '%s' loaded at %I64x\n", szPath, BaseOffset);
-	}
-
-	add_module_loaded_info((char *)szPath, BaseOffset);
 	return DEBUG_STATUS_GO;
 }
 
@@ -747,24 +777,6 @@ EventCallbacks::LoadModule(
 	UNREFERENCED_PARAMETER(ModuleName);
 	UNREFERENCED_PARAMETER(CheckSum);
 	UNREFERENCED_PARAMETER(TimeDateStamp);
-	char szPath[MAX_PATH] = {0};
-
-	strcpy(szPath, ImageName);
-
-	if (strstr(ImageName, "\\") == NULL)
-	{
-		if (!isFuzzMode)
-		{
-			printf("%s without full path\n", ImageName);
-		}
-	}
-
-	if (!isFuzzMode)
-	{
-		Print("DLL '%s' loaded at %I64x\n", szPath, BaseOffset);
-	}
-
-	add_module_loaded_info((char *)ImageName, BaseOffset);
 	return DEBUG_STATUS_GO;
 }
 
@@ -920,6 +932,13 @@ void init_debug_callback()
 	{
 		Exit(1, "SetEventCallbacks failed, 0x%X\n", Status);
 	}
+
+	/*
+		if ((Status = g_Client->SetOutputCallbacks(&g_OutputCb)) != S_OK)
+	{
+		Exit(1, "SetOutputCallbacks failed, 0x%X\n", Status);
+	}
+	*/
 }
 
 void exec_testcase(void)
@@ -941,8 +960,7 @@ void exec_testcase(void)
 	save_status();
 	save_all_trace();
 
-	GetModuleList(dwDebugeePid);
-
+	// GetModuleList(dwDebugeePid);
 
 	g_Client->TerminateProcesses();
 	g_Client->DetachProcesses();
@@ -994,8 +1012,6 @@ void load_bb_info(char *fpath)
 #include <iostream>
 using namespace std;
 using json = nlohmann::json;
-
-
 
 void parse_json(char *path)
 {
@@ -1123,6 +1139,8 @@ void __cdecl main(int Argc, char **Argv)
 			}
 		}
 	}
+
+	clean_resource();
 
 	Exit(0, "");
 }
