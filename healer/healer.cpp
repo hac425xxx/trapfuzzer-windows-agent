@@ -49,6 +49,9 @@ typedef struct _COV_MOD_INFO
 	std::vector<unsigned int> bb_trace;
 } COV_MOD_INFO;
 
+
+FILE * g_debug_output_fp = NULL;
+
 std::vector<COV_MOD_INFO *> cov_mod_info_list;
 unsigned int g_cov_mod_count = 0;
 
@@ -63,6 +66,9 @@ PCSTR g_SymbolPath;
 char g_CommandLine[8 * MAX_PATH];
 BOOL g_Verbose;
 BOOL g_NeedVersionBps;
+
+char g_pre_command[8 * MAX_PATH]= { 0 };
+char g_wait_for_dll[500] = { 0 };
 
 IDebugClient *g_Client;
 IDebugControl *g_Control;
@@ -707,22 +713,28 @@ EventCallbacks::Exception(
 		dump_stack_trace();
 		is_crash = 1;
 
-		if (!isFuzzMode)
-		{
-			g_Client->SetOutputCallbacks(&g_OutputCb);
-			g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "r", DEBUG_EXECUTE_ECHO);
-			g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "db @eip - 4", DEBUG_EXECUTE_ECHO);
+	
+        g_Client->SetOutputCallbacks(&g_OutputCb);
+        g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "r", DEBUG_EXECUTE_ECHO);
+        g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "u @eip", DEBUG_EXECUTE_ECHO);
 
-			char input_cmd[0x200];
-			while (1)
-			{
-				std::cin.getline(input_cmd, 0x200);
-				g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, input_cmd, DEBUG_EXECUTE_ECHO);
-			}
+        if(!isFuzzMode)
+        {
+            char input_cmd[0x200];
+            while (1)
+            {
+                printf("quit-to-exit> ");
+                std::cin.getline(input_cmd, 0x200);
+                if(!strcmp(input_cmd, "quit"))
+                {
+                    break;
+                }
+                g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, input_cmd, DEBUG_EXECUTE_ECHO);
+            }
+        }
 
-			g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "kb 8", DEBUG_EXECUTE_ECHO);
-			g_Client->SetOutputCallbacks(NULL);
-		}
+        g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "kb 8", DEBUG_EXECUTE_ECHO);
+        g_Client->SetOutputCallbacks(NULL);
 
 		g_Control->Execute(DEBUG_OUTCTL_THIS_CLIENT, "q", DEBUG_EXECUTE_ECHO);
 
@@ -758,6 +770,7 @@ EventCallbacks::CreateProcess(
 	UNREFERENCED_PARAMETER(StartOffset);
 
 	dwDebugeePid = GetProcessId((HANDLE)Handle);
+
 	return DEBUG_STATUS_GO;
 }
 
@@ -777,6 +790,21 @@ EventCallbacks::LoadModule(
 	UNREFERENCED_PARAMETER(ModuleName);
 	UNREFERENCED_PARAMETER(CheckSum);
 	UNREFERENCED_PARAMETER(TimeDateStamp);
+
+
+	char* fname = getFileNameFromPath((char*)ImageName, '\\');
+
+	if (!isFuzzMode)
+	{
+		printf("load %s!\n", fname);
+	}
+
+
+	if (strcmp(g_wait_for_dll, fname) == 0 && g_pre_command[0])
+	{
+		system(g_pre_command);
+	}
+
 	return DEBUG_STATUS_GO;
 }
 
@@ -949,11 +977,21 @@ void exec_testcase(void)
 
 	// init_debug_callback();
 
+    if(isFuzzMode)
+    {
+        g_debug_output_fp = fopen("debug-output.txt", "w");
+    }
+    else
+    {
+        g_debug_output_fp = stdout;
+    }
+
 	if ((Status = g_Client->CreateProcess(0, g_CommandLine,
 										  DEBUG_ONLY_THIS_PROCESS)) != S_OK)
 	{
 		Exit(1, "CreateProcess failed, 0x%X\n", Status);
 	}
+
 
 	handle_event_loop();
 
@@ -969,6 +1007,11 @@ void exec_testcase(void)
 	// KillProcess(dwDebugeePid);
 	// clean_resource();
 
+    if(isFuzzMode)
+    {
+        fclose(g_debug_output_fp);
+    }
+
 	if (patch_to_binary)
 	{
 		int patch_instr_count = patch_to_binary_file();
@@ -982,7 +1025,20 @@ void load_bb_info(char *fpath)
 {
 	COV_MOD_INFO *cmi = new COV_MOD_INFO;
 
+
+	if (!isFuzzMode)
+	{
+		printf("[load_bb_info] load %s!\n", fpath);
+	}
+
 	FILE *fp = fopen(fpath, "rb");
+
+	if (fp == NULL)
+	{
+		printf("[load_bb_info] open %s failed!\n", fpath);
+		exit(0);
+	}
+
 	fread(&cmi->rva_size, 4, 1, fp);
 
 	int fname_sz = 0;
@@ -1035,6 +1091,19 @@ void parse_json(char *path)
 	if (j.contains("server_sock_port"))
 	{
 		server_sock_port = j["server_sock_port"];
+	}
+
+
+	if (j.contains("pre_command"))
+	{
+		std::string pre_cmd = j["pre_command"];
+		strcpy(g_pre_command, pre_cmd.c_str());
+	}
+
+	if (j.contains("wait_for_dll"))
+	{
+		std::string wait_for_dll = j["wait_for_dll"];
+		strcpy(g_wait_for_dll, wait_for_dll.c_str());
 	}
 
 	for (size_t i = 0; i < basic_block_file_list.size(); i++)

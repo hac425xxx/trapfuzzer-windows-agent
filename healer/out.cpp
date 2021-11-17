@@ -13,6 +13,7 @@
 #include "out.hpp"
 
 StdioOutputCallbacks g_OutputCb;
+extern FILE * g_debug_output_fp;
 
 STDMETHODIMP
 StdioOutputCallbacks::QueryInterface(
@@ -64,6 +65,6 @@ StdioOutputCallbacks::Output(
     )
 {
     UNREFERENCED_PARAMETER(Mask);
-    fputs(Text, stdout);
+    fputs(Text, g_debug_output_fp);
     return S_OK;
 }
