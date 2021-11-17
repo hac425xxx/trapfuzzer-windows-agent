@@ -1144,6 +1144,7 @@ void parse_json(char *path)
 void __cdecl main(int Argc, char **Argv)
 {
     isFuzzMode = 0;
+    printf("Version Compile Time:%s %s\n", __DATE__, __TIME__);
 
     if (Argc == 2)
     {
