@@ -13,14 +13,13 @@
 #include "out.hpp"
 
 StdioOutputCallbacks g_OutputCb;
-extern FILE * g_debug_output_fp;
+extern FILE *g_debug_output_fp;
 
 STDMETHODIMP
 StdioOutputCallbacks::QueryInterface(
     THIS_
-    _In_ REFIID InterfaceId,
-    _Out_ PVOID* Interface
-    )
+        _In_ REFIID InterfaceId,
+    _Out_ PVOID *Interface)
 {
     *Interface = NULL;
 
@@ -39,8 +38,7 @@ StdioOutputCallbacks::QueryInterface(
 
 STDMETHODIMP_(ULONG)
 StdioOutputCallbacks::AddRef(
-    THIS
-    )
+    THIS)
 {
     // This class is designed to be static so
     // there's no true refcount.
@@ -49,8 +47,7 @@ StdioOutputCallbacks::AddRef(
 
 STDMETHODIMP_(ULONG)
 StdioOutputCallbacks::Release(
-    THIS
-    )
+    THIS)
 {
     // This class is designed to be static so
     // there's no true refcount.
@@ -60,9 +57,8 @@ StdioOutputCallbacks::Release(
 STDMETHODIMP
 StdioOutputCallbacks::Output(
     THIS_
-    _In_ ULONG Mask,
-    _In_ PCSTR Text
-    )
+        _In_ ULONG Mask,
+    _In_ PCSTR Text)
 {
     UNREFERENCED_PARAMETER(Mask);
     fputs(Text, g_debug_output_fp);
