@@ -497,6 +497,13 @@ void save_status()
 	fclose(pfile);
 }
 
+void save_target_process_pid(unsigned int pid)
+{
+	FILE *pfile = fopen("target.pid", "w");
+	fprintf(pfile, "%u\n", pid);
+	fclose(pfile);
+}
+
 //----------------------------------------------------------------------------
 //
 // Healing routines.
@@ -771,6 +778,7 @@ EventCallbacks::CreateProcess(
 
 	dwDebugeePid = GetProcessId((HANDLE)Handle);
 
+    save_target_process_pid(dwDebugeePid);
 	return DEBUG_STATUS_GO;
 }
 
